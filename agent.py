@@ -71,6 +71,14 @@ def get_live_config(phone_number: str | None = None):
     config = {}
     paths = []
     if phone_number and phone_number != "unknown":
+
+            # Firebase se config fetch karo (Dashboard se save hua data)
+    from db import get_config_from_firebase
+    if phone_number and phone_number != "unknown":
+        firebase_config = get_config_from_firebase(phone_number)
+        if firebase_config:
+            logger.info(f"[CONFIG] Using Firebase config for {phone_number}")
+            return firebase_config
         clean = phone_number.replace("+", "").replace(" ", "")
         paths.append(f"configs/{clean}.json")
     paths += ["configs/default.json", CONFIG_FILE]
