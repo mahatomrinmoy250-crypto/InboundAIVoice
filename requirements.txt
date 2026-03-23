@@ -105,7 +105,7 @@ starlette==0.52.1
 storage3==2.28.0
 StrEnum==0.4.15
 strictyaml==1.7.3
-firebase-admin==6.5.0
+firebase-admin>=6.6.0
 sympy==1.14.0
 tqdm==4.67.3
 typer==0.24.0
