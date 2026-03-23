@@ -10,6 +10,28 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from typing import Annotated
+import firebase_admin
+from firebase_admin import credentials
+from firebase_admin import firestore
+
+# ── Firebase Initialization ─────────────────────────────────────────────────
+firebase_creds_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
+
+if firebase_creds_json:
+        try:
+                    creds_dict = json.loads(firebase_creds_json)
+                    cred = credentials.Certificate(creds_dict)
+
+        # Initialize with your specific database ID
+        firebase_admin.initialize_app(cred)
+        db_firebase = firestore.client(database_id="ai-studio-f9dfe490-3495-4d78-b4b2-ae1056878701")
+        print("✅ Firebase connected successfully!")
+except Exception as e:
+        print(f"❌ Firebase connection error: {e}")
+        db_firebase = None
+else:
+    print("⚠️ FIREBASE_SERVICE_ACCOUNT environment variable not found.")
+        db_firebase = None
 
 # Fix for macOS SSL certificate verification
 os.environ["SSL_CERT_FILE"] = certifi.where()
@@ -63,6 +85,36 @@ def is_rate_limited(phone: str) -> bool:
         return True
     _call_timestamps[phone].append(now)
     return False
+
+# ── Firebase Helper Functions ──────────────────────────────────────────────
+def get_agent_config(phone_number):
+        """Phone number se Firebase mein agent ka config fetch karna."""
+        if not db_firebase:
+                    return None
+
+    try:
+                agents_ref = db_firebase.collection("agents")
+                query = agents_ref.where("phone_number", "==", phone_number).limit(1)
+                results = query.stream()
+
+        for doc in results:
+                        return doc.to_dict()
+except Exception as e:
+        print(f"Error fetching agent config: {e}")
+
+    return None
+
+
+def save_firebase_call_log(call_data):
+        """Call khatam hone par Firebase mein log save karna."""
+        if not db_firebase:
+                    return
+
+    try:
+                db_firebase.collection("call_logs").add(call_data)
+                print("✅ Call log saved to Firebase")
+except Exception as e:
+        print(f"❌ Error saving call log: {e}")
 
 
 # ── Config loader (#17 partial — per-client path awareness) ───────────────────
