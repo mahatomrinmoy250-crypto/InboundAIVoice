@@ -92,36 +92,35 @@ def is_rate_limited(phone: str) -> bool:
     _call_timestamps[phone].append(now)
     return False
 
-# ── Firebase Helper Functions ──────────────────────────────────────────────
+# ── Firebase Helper Functions ──────────────────────────────────────────────# ── Firebase Helper Functions ──────────────────────────────────────────────
 def get_agent_config(phone_number):
-        """Phone number se Firebase mein agent ka config fetch karna."""
-        if not db_firebase:
-                    return None
+    """Phone number se Firebase mein agent ka config fetch karna."""
+    if not db_firebase:
+        return None
 
     try:
-                agents_ref = db_firebase.collection("agents")
-                query = agents_ref.where("phone_number", "==", phone_number).limit(1)
-                results = query.stream()
+        agents_ref = db_firebase.collection("agents")
+        query = agents_ref.where("phone_number", "==", phone_number).limit(1)
+        results = query.stream()
 
         for doc in results:
-                        return doc.to_dict()
-except Exception as e:
+            return doc.to_dict()
+    except Exception as e:
         print(f"Error fetching agent config: {e}")
 
     return None
 
 
 def save_firebase_call_log(call_data):
-        """Call khatam hone par Firebase mein log save karna."""
-        if not db_firebase:
-                    return
+    """Call khatam hone par Firebase mein log save karna."""
+    if not db_firebase:
+        return
 
     try:
-                db_firebase.collection("call_logs").add(call_data)
-                print("✅ Call log saved to Firebase")
-except Exception as e:
+        db_firebase.collection("call_logs").add(call_data)
+        print("✅ Call log saved to Firebase")
+    except Exception as e:
         print(f"❌ Error saving call log: {e}")
-
 
 # ── Config loader (#17 partial — per-client path awareness) ───────────────────
 def get_live_config(phone_number: str | None = None):
