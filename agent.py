@@ -15,20 +15,27 @@ from firebase_admin import credentials
 from firebase_admin import firestore
 
 # ── Firebase Initialization ─────────────────────────────────────────────────
-firebase_creds_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
+# ── Firebase Initialization ─────────────────────────────────────────────────
+import base64 # Yeh line zaroori hai
 
-if firebase_creds_json:
-        try:
-                    creds_dict = json.loads(firebase_creds_json)
-                    cred = credentials.Certificate(creds_dict)
+firebase_creds_b64 = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
+db = None
 
+if firebase_creds_b64:
+    try:
+        # Base64 string ko wapas JSON string mein convert karein
+        firebase_creds_json = base64.b64decode(firebase_creds_b64).decode('utf-8')
+        
+        # JSON string ko dictionary mein convert karein
+        creds_dict = json.loads(firebase_creds_json)
+        cred = credentials.Certificate(creds_dict)
+        
         # Initialize with your specific database ID
         firebase_admin.initialize_app(cred)
-        db_firebase = firestore.client(database_id="ai-studio-f9dfe490-3495-4d78-b4b2-ae1056878701")
+        db = firestore.client(database_id="ai-studio-f9dfe490-3495-4d78-b4b2-ae1056878701")
         print("✅ Firebase connected successfully!")
-except Exception as e:
+    except Exception as e:
         print(f"❌ Firebase connection error: {e}")
-        db_firebase = None
 else:
     print("⚠️ FIREBASE_SERVICE_ACCOUNT environment variable not found.")
         db_firebase = None
