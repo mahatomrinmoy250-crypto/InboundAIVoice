@@ -16,10 +16,11 @@ from firebase_admin import firestore
 
 # ── Firebase Initialization ─────────────────────────────────────────────────
 # ── Firebase Initialization ─────────────────────────────────────────────────
-import base64 # Yeh line zaroori hai
+# ── Firebase Initialization ─────────────────────────────────────────────────
+import base64
 
 firebase_creds_b64 = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
-db = None
+db_firebase = None  # Yahan db ki jagah db_firebase aayega
 
 if firebase_creds_b64:
     try:
@@ -32,14 +33,12 @@ if firebase_creds_b64:
         
         # Initialize with your specific database ID
         firebase_admin.initialize_app(cred)
-        db = firestore.client(database_id="ai-studio-f9dfe490-3495-4d78-b4b2-ae1056878701")
+        db_firebase = firestore.client(database_id="ai-studio-f9dfe490-3495-4d78-b4b2-ae1056878701") # Yahan bhi db_firebase
         print("✅ Firebase connected successfully!")
     except Exception as e:
         print(f"❌ Firebase connection error: {e}")
 else:
     print("⚠️ FIREBASE_SERVICE_ACCOUNT environment variable not found.")
-    db_firebase = None
-
 # Fix for macOS SSL certificate verification
 os.environ["SSL_CERT_FILE"] = certifi.where()
 
