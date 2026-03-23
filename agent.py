@@ -38,7 +38,7 @@ if firebase_creds_b64:
         print(f"❌ Firebase connection error: {e}")
 else:
     print("⚠️ FIREBASE_SERVICE_ACCOUNT environment variable not found.")
-        db_firebase = None
+    db_firebase = None
 
 # Fix for macOS SSL certificate verification
 os.environ["SSL_CERT_FILE"] = certifi.where()
