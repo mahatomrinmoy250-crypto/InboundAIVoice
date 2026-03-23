@@ -1,53 +1,41 @@
 import os
+import json
 import time
 import logging
-from supabase import create_client, Client
+import firebase_admin
+from firebase_admin import credentials, firestore
+from datetime import datetime
 
 logger = logging.getLogger("db")
 
-# ─── Columns added by supabase_migration_v2.sql ───────────────────────────────
-# If the migration hasn't been run yet, these columns won't exist.
-# We detect PGRST204 (schema cache miss) and retry with just base columns.
-_ANALYTICS_COLUMNS = {
-    "sentiment", "was_booked", "interrupt_count",
-    "estimated_cost_usd", "call_date", "call_hour", "call_day_of_week",
-}
-_BASE_COLUMNS = {"phone_number", "duration_seconds", "transcript", "summary",
-                 "recording_url", "caller_name"}
+# ── Firebase Init (Safe — from env variable) ────────────────────────────────
+_db_client = None
 
-# ─── Retry helper ─────────────────────────────────────────────────────────────
-_MAX_RETRIES = 3
-_RETRY_DELAYS = [1.0, 2.0, 4.0]   # seconds — covers transient SSL 525 errors
-
-
-def _is_retryable(err_str: str) -> bool:
-    """True if the error is a transient network or SSL failure worth retrying."""
-    transient = ("525", "ssl", "timeout", "connection", "network", "502", "503", "504")
-    el = err_str.lower()
-    return any(k in el for k in transient)
-
-
-def _is_schema_error(err_str: str) -> bool:
-    """True if Supabase returned PGRST204 — column not found in schema cache."""
-    return "PGRST204" in err_str or "schema cache" in err_str.lower()
-
-
-# ─── Client ───────────────────────────────────────────────────────────────────
-
-def get_supabase() -> Client | None:
-    url = os.environ.get("SUPABASE_URL", "")
-    key = os.environ.get("SUPABASE_KEY", "")
-    if not url or not key:
-        return None
+def get_firebase() -> firestore.Client | None:
+    global _db_client
+    if _db_client:
+        return _db_client
     try:
-        return create_client(url, key)
+        cred_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON", "")
+        if not cred_json:
+            logger.warning("[DB] FIREBASE_SERVICE_ACCOUNT_JSON not set")
+            return None
+        cred_dict = json.loads(cred_json)
+        if not firebase_admin._apps:
+            cred = credentials.Certificate(cred_dict)
+            firebase_admin.initialize_app(cred)
+        _db_client = firestore.client()
+        return _db_client
     except Exception as e:
-        logger.error(f"Failed to init Supabase client: {e}")
+        logger.error(f"[DB] Firebase init failed: {e}")
         return None
 
+# ── get_supabase() — Backward Compat Alias ─────────────────────────────────
+def get_supabase():
+    """Alias for backward compatibility with existing code."""
+    return get_firebase()
 
-# ─── save_call_log ────────────────────────────────────────────────────────────
-
+# ── save_call_log ────────────────────────────────────────────────────────────
 def save_call_log(
     phone: str,
     duration: int,
@@ -63,141 +51,105 @@ def save_call_log(
     was_booked: bool = False,
     interrupt_count: int = 0,
 ) -> dict:
-    """
-    Insert a call log into Supabase.
-
-    Strategy:
-    1. Try with all columns (including analytics columns from migration_v2).
-    2. If PGRST204 (column not in schema cache — migration not yet run),
-       retry with only the base columns so the call is never silently lost.
-    3. Retry up to 3× on transient SSL/network errors with exponential backoff.
-    """
-    url = os.environ.get("SUPABASE_URL", "")
-    key = os.environ.get("SUPABASE_KEY", "")
-    if not url or not key:
-        logger.info(f"Supabase not configured. Local log → {phone} {duration}s")
-        return {"success": False, "message": "Supabase not configured"}
-
-    supabase = get_supabase()
-    if not supabase:
-        return {"success": False, "message": "Supabase client failed"}
-
-    # Build full payload
-    full_data: dict = {
-        "phone_number":    phone,
-        "duration_seconds": duration,
-        "transcript":      transcript,
-        "summary":         summary,
-        "sentiment":       sentiment,
-        "was_booked":      was_booked,
-        "interrupt_count": interrupt_count,
-    }
-    if recording_url:               full_data["recording_url"]      = recording_url
-    if caller_name:                 full_data["caller_name"]         = caller_name
-    if estimated_cost_usd is not None: full_data["estimated_cost_usd"] = estimated_cost_usd
-    if call_date:                   full_data["call_date"]           = call_date
-    if call_hour is not None:       full_data["call_hour"]           = call_hour
-    if call_day_of_week:            full_data["call_day_of_week"]    = call_day_of_week
-
-    # Base-only payload (fallback if migration not run)
-    base_data: dict = {k: v for k, v in full_data.items() if k not in _ANALYTICS_COLUMNS}
-
-    def _try_insert(data: dict, label: str) -> dict:
-        for attempt in range(_MAX_RETRIES):
-            try:
-                res = supabase.table("call_logs").insert(data).execute()
-                logger.info(f"Saved call log for {phone} ({label})")
-                return {"success": True, "data": res.data}
-            except Exception as e:
-                err = str(e)
-                if _is_schema_error(err):
-                    # Column missing — propagate so caller can retry with base
-                    raise RuntimeError("SCHEMA_ERROR:" + err)
-                if _is_retryable(err) and attempt < _MAX_RETRIES - 1:
-                    delay = _RETRY_DELAYS[attempt]
-                    logger.warning(f"Transient error (attempt {attempt+1}), retrying in {delay}s: {err[:80]}")
-                    time.sleep(delay)
-                    continue
-                logger.error(f"Failed to save call log ({label}): {e}")
-                return {"success": False, "message": err}
-        return {"success": False, "message": "Max retries exceeded"}
-
-    # Attempt 1: full payload
+    """Insert a call log into Firebase Firestore."""
+    db = get_firebase()
+    if not db:
+        logger.info(f"[DB] Firebase not configured. Local log → {phone}")
+        return {"success": False, "message": "Firebase not configured"}
     try:
-        return _try_insert(full_data, "full")
-    except RuntimeError as e:
-        err = str(e)
-        if "SCHEMA_ERROR" in err:
-            # Migration not run yet — fall back to base columns only
-            logger.warning(
-                "Analytics columns missing (run supabase_migration_v2.sql). "
-                "Falling back to base columns for this call log."
-            )
-            return _try_insert(base_data, "base-fallback")
-        raise
-
-
-# ─── fetch_call_logs ──────────────────────────────────────────────────────────
-
-def fetch_call_logs(limit: int = 50) -> list:
-    supabase = get_supabase()
-    if not supabase:
-        return []
-    for attempt in range(_MAX_RETRIES):
-        try:
-            res = (
-                supabase.table("call_logs")
-                .select("*")
-                .order("created_at", desc=True)
-                .limit(limit)
-                .execute()
-            )
-            return res.data
-        except Exception as e:
-            if _is_retryable(str(e)) and attempt < _MAX_RETRIES - 1:
-                time.sleep(_RETRY_DELAYS[attempt])
-                continue
-            logger.error(f"Failed to fetch call logs: {e}")
-            return []
-    return []
-
-
-# ─── fetch_bookings ───────────────────────────────────────────────────────────
-
-def fetch_bookings() -> list:
-    supabase = get_supabase()
-    if not supabase:
-        return []
-    try:
-        res = (
-            supabase.table("call_logs")
-            .select("id, phone_number, summary, created_at")
-            .ilike("summary", "%Confirmed%")
-            .order("created_at", desc=True)
-            .limit(200)
-            .execute()
-        )
-        return res.data
+        data = {
+            "phone_number": phone,
+            "caller_name": caller_name,
+            "duration_seconds": duration,
+            "transcript": transcript,
+            "summary": summary,
+            "recording_url": recording_url,
+            "sentiment": sentiment,
+            "was_booked": was_booked,
+            "interrupt_count": interrupt_count,
+            "estimated_cost_usd": estimated_cost_usd,
+            "call_date": call_date,
+            "call_hour": call_hour,
+            "call_day_of_week": call_day_of_week,
+            "created_at": firestore.SERVER_TIMESTAMP,
+        }
+        db.collection("call_logs").add(data)
+        logger.info(f"[DB] Call log saved for {phone}")
+        return {"success": True}
     except Exception as e:
-        logger.error(f"Failed to fetch bookings: {e}")
+        logger.error(f"[DB] save_call_log failed: {e}")
+        return {"success": False, "message": str(e)}
+
+# ── get_config_from_firebase (Agent Config from Dashboard) ──────────────────
+def get_config_from_firebase(client_id: str) -> dict | None:
+    """
+    Fetch agent config from Firebase.
+    Dashboard saves to agent_configs/{client_id}
+    Python worker reads from here.
+    """
+    db = get_firebase()
+    if not db:
+        return None
+    try:
+        doc = db.collection("agent_configs").document(client_id).get()
+        if doc.exists:
+            logger.info(f"[DB] Config loaded from Firebase for: {client_id}")
+            return doc.to_dict()
+        return None
+    except Exception as e:
+        logger.error(f"[DB] get_config_from_firebase failed: {e}")
+        return None
+
+# ── fetch_call_logs ──────────────────────────────────────────────────────────
+def fetch_call_logs(limit: int = 50) -> list:
+    """Fetch recent call logs from Firebase."""
+    db = get_firebase()
+    if not db:
+        return []
+    try:
+        docs = (db.collection("call_logs")
+                .order_by("created_at", direction=firestore.Query.DESCENDING)
+                .limit(limit)
+                .stream())
+        return [{**d.to_dict(), "id": d.id} for d in docs]
+    except Exception as e:
+        logger.error(f"[DB] fetch_call_logs failed: {e}")
         return []
 
+# ── fetch_bookings ───────────────────────────────────────────────────────────
+def fetch_bookings() -> list:
+    """Fetch calls where booking was confirmed."""
+    db = get_firebase()
+    if not db:
+        return []
+    try:
+        docs = (db.collection("call_logs")
+                .where("was_booked", "==", True)
+                .order_by("created_at", direction=firestore.Query.DESCENDING)
+                .limit(200)
+                .stream())
+        return [{**d.to_dict(), "id": d.id} for d in docs]
+    except Exception as e:
+        logger.error(f"[DB] fetch_bookings failed: {e}")
+        return []
 
-# ─── fetch_stats ──────────────────────────────────────────────────────────────
-
+# ── fetch_stats ──────────────────────────────────────────────────────────────
 def fetch_stats() -> dict:
+    """Calculate aggregate stats from call logs."""
     _empty = {"total_calls": 0, "total_bookings": 0, "avg_duration": 0, "booking_rate": 0}
-    supabase = get_supabase()
-    if not supabase:
+    db = get_firebase()
+    if not db:
         return _empty
     try:
-        rows = (supabase.table("call_logs").select("duration_seconds, summary").execute()).data or []
+        docs = db.collection("call_logs").stream()
+        rows = [d.to_dict() for d in docs]
         total = len(rows)
-        bookings = sum(1 for r in rows if "Confirmed" in r.get("summary", ""))
+        bookings = sum(1 for r in rows if r.get("was_booked"))
         durations = [r["duration_seconds"] for r in rows if r.get("duration_seconds")]
         avg_dur = round(sum(durations) / len(durations)) if durations else 0
         rate = round((bookings / total) * 100) if total else 0
-        return {"total_calls": total, "total_bookings": bookings, "avg_duration": avg_dur, "booking_rate": rate}
+        return {"total_calls": total, "total_bookings": bookings,
+                "avg_duration": avg_dur, "booking_rate": rate}
     except Exception as e:
-        logger.error(f"Failed to fetch stats: {e}")
+        logger.error(f"[DB] fetch_stats failed: {e}")
         return _empty
